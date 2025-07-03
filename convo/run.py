@@ -61,6 +61,9 @@ if __name__ == "__main__":
                 intervene=False,
             )
             initial_results_per_model[name].append(result)
+            
+            # if name=="qwen":
+            #     print(result)
         time.sleep(0.5)  # Small delay to avoid overwhelming Ollama server
 
     # Combine initial results into a single list for 'all_results'
@@ -106,7 +109,7 @@ if __name__ == "__main__":
         )
 
     # Save results
-    timestamp = datetime.datetime.now().strftime("%m-%d_%H-%M-%S")
+    timestamp = datetime.datetime.now().strftime("%m-%d_%H-%M")
     output_filename = f"cladder_r{args.round}_{timestamp}.pkl"
     
     with open(output_filename, "wb") as f:

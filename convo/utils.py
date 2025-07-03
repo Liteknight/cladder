@@ -10,6 +10,8 @@ import pandas as pd
 from tqdm import tqdm
 from collections import Counter
 
+from pydantic import BaseModel
+
 random.seed(1234)
 
 
@@ -31,8 +33,9 @@ def prepare_context(
 
     # Guide for causal inference, specific to Cladder if applicable
     guide = """
-You should structure your final answer as follows: Step 1) Extract the causal graph: Identify the causal graph that depicts the relationships in the scenario. The diagram should simply consist of edges denoted in "var1 -> var2" format, separated by commas.  Step 2) Determine the query type: Identify the type of query implied by the main question. Choices include "marginal probability", "conditional probability", "explaining away effect", "backdoor adjustment set", "average treatment effect", "collider bias", "normal counterfactual question", "average treatment effect on treated", "natural direct effect" or "natural indirect effect". Your answer should only be a term from the list above, enclosed in quotation marks.  Step 3) Formalize the query: Translate the query into its formal mathematical expression based on its type, utilizing the "do(·)" notation or counterfactual notations as needed.  Step 4) Gather all relevant data: Extract all the available data. Your answer should contain nothing but marginal probabilities and conditional probabilities in the form "P(...)=..." or "P(...|...)=...", each probability being separated by a semicolon. Stick to the previously mentioned denotations for the variables.  Step 5) Deduce the estimand using causal inference: Given all the information above, deduce the estimand using skills such as do-calculus, counterfactual prediction, and the basics of probabilities. Answer step by step.  Step 6) Calculate the estimand: Insert the relevant data in Step 4 into the estimand, perform basic arithmetic calculations, and derive the final answer. Step 7) Give a final yes/no answer to the question.
+You will be asked a causal reasoning question. You should structure your final answer as follows: Step 1) Extract the causal graph: Identify the causal graph that depicts the relationships in the scenario. The diagram should simply consist of edges denoted in "var1 -> var2" format, separated by commas.  Step 2) Determine the query type: Identify the type of query implied by the main question. Choices include "marginal probability", "conditional probability", "explaining away effect", "backdoor adjustment set", "average treatment effect", "collider bias", "normal counterfactual question", "average treatment effect on treated", "natural direct effect" or "natural indirect effect". Your answer should only be a term from the list above, enclosed in quotation marks.  Step 3) Formalize the query: Translate the query into its formal mathematical expression based on its type, utilizing the "do(·)" notation or counterfactual notations as needed.  Step 4) Gather all relevant data: Extract all the available data. Your answer should contain nothing but marginal probabilities and conditional probabilities in the form "P(...)=..." or "P(...|...)=...", each probability being separated by a semicolon. Stick to the previously mentioned denotations for the variables.  Step 5) Deduce the estimand using causal inference: Given all the information above, deduce the estimand using skills such as do-calculus, counterfactual prediction, and the basics of probabilities. Answer step by step.  Step 6) Calculate the estimand: Insert the relevant data in Step 4 into the estimand, perform basic arithmetic calculations, and derive the final answer. Step 7) Give a final yes/no answer to the question.
 There is an identifiable yes/no answer, which may sometimes go against your commonsense intuition. Answer step by step, where each thinking step has AT MOST 20 words -- in other words, you need to be concise in your reasoning trace.
+Be confident in your thinking: while answers may be unintuitive, there are no trick questions, and answers will be obvious once calculated.
 """
     context.append(guide)
     context.append("\n")  # Add a newline for separation
@@ -52,12 +55,12 @@ There is an identifiable yes/no answer, which may sometimes go against your comm
     else:
         context.append("Q: " + test_sample["question"])
 
-    context.append("Please answer the question with step-by-step reasoning.")
+    # context.append("Please answer the question with step-by-step reasoning.")
     context.append(
         "\nAlso, evaluate your confidence level (between 0.0 and 1.0) to indicate the possibility of your answer being right."
     )
     context.append(
-        'Output your answer in json format, with the format as follows: {"reasoning": "", "answer": "", "confidence_level": ""}. Please strictly output in JSON format.'
+        'Output with JSON format as follows: {"thinking:", "", "reasoning": "", "answer": "", "confidence_level": ""}. Your internal thoughts go in the first, and your final, polished reasoning goes in the second.'
     )
     context.append('Only answer yes or no in the "answer" field.')
 
@@ -80,6 +83,12 @@ def invalid_result():
     }
     return result
 
+
+class Answer(BaseModel):
+    thinking: str
+    reasoning: str
+    answer: str
+    confidence: float
 
 def parse_json(model_output):
     """
@@ -108,7 +117,7 @@ def parse_json(model_output):
         if json_match:
             json_string = json_match.group(1)
         else:
-            return "ERR_SYNTAX" # No JSON structure found
+            return "ERR_SYNTAX_1" # No JSON structure found
 
     try:
         # Attempt to clean up common LLM output issues before parsing
@@ -127,9 +136,9 @@ def parse_json(model_output):
             result = ast.literal_eval(json_string)
             # Ensure the result is a dictionary; ast.literal_eval can return other types
             if not isinstance(result, dict):
-                return "ERR_SYNTAX"
+                return "ERR_SYNTAX_2"
         except (SyntaxError, NameError, ValueError, TypeError):
-            return "ERR_SYNTAX"
+            return "ERR_SYNTAX_3"
     return result
 
 
@@ -226,11 +235,11 @@ def parse_output(all_results, rounds, model_names):
             # Construct debate prompt
             for v_ans, v_count in vote_counts:
                 i[f"debate_prompt_{rounds}"] += (
-                    f"There are {v_count} agents think the answer is {v_ans}. "
+                    f"There are {v_count} agents that think the answer is {v_ans}. "
                 )
                 exp_index = find_idx_by_element(i[f"vote_{rounds}"], v_ans)
                 group_exp = find_element_by_indices(i[f"exps_{rounds}"], exp_index)
-                exp = "\n".join([f"One agent solution: {g}" for g in group_exp])
+                exp = "\n".join([f"Here is one agent's solution: {g}" for g in group_exp])
                 i[f"debate_prompt_{rounds}"] += exp + "\n\n"
 
     return all_results
@@ -267,11 +276,18 @@ def clean_output(all_results, rounds, model_names):
             output_key = f"{name}_output_{rounds}"
             if output_key in i:
                 original_output_dict = i[output_key]
-                print(original_output_dict, output_key, i)
+                # print(original_output_dict, output_key, i)
                 raw_response_string = original_output_dict.get('response', '')
                 
                 # Parse the JSON from the raw response string
                 parsed_json_from_response = parse_json(raw_response_string)
+                
+                print("\n\n\n========")
+                print(name)
+                print("========")
+                print(raw_response_string)
+                print("fjdsijfglojtew")
+                print(parsed_json_from_response)
 
                 # If parsing was successful and it's a dict, update the main dict's fields
                 if isinstance(parsed_json_from_response, dict):
