@@ -16,7 +16,7 @@ random.seed(1234)
 
 
 def prepare_context(
-    test_sample, additional_instruc=None, intervene=False
+    test_sample, additional_instruc=None, intervene=False, force_json=False
 ):
     """
     Prepares the prompt context for the Ollama models.
@@ -25,13 +25,12 @@ def prepare_context(
         test_sample (dict): The test sample containing question, background, etc.
         additional_instruc (list, optional): Additional instructions for the model. Defaults to None.
         intervene (bool, optional): Whether to include intervention in the prompt. Defaults to False.
+        force_json (bool): Whether to include the JSON format instruction in the prompt.
 
     Returns:
         str: The fully constructed prompt string.
     """
     context = []
-
-    # Guide for causal inference, specific to Cladder if applicable
     guide = """
 You will be asked a causal reasoning question. You should structure your final answer as follows: Step 1) Extract the causal graph: Identify the causal graph that depicts the relationships in the scenario. The diagram should simply consist of edges denoted in "var1 -> var2" format, separated by commas.  Step 2) Determine the query type: Identify the type of query implied by the main question. Choices include "marginal probability", "conditional probability", "explaining away effect", "backdoor adjustment set", "average treatment effect", "collider bias", "normal counterfactual question", "average treatment effect on treated", "natural direct effect" or "natural indirect effect". Your answer should only be a term from the list above, enclosed in quotation marks.  Step 3) Formalize the query: Translate the query into its formal mathematical expression based on its type, utilizing the "do(·)" notation or counterfactual notations as needed.  Step 4) Gather all relevant data: Extract all the available data. Your answer should contain nothing but marginal probabilities and conditional probabilities in the form "P(...)=..." or "P(...|...)=...", each probability being separated by a semicolon. Stick to the previously mentioned denotations for the variables.  Step 5) Deduce the estimand using causal inference: Given all the information above, deduce the estimand using skills such as do-calculus, counterfactual prediction, and the basics of probabilities. Answer step by step.  Step 6) Calculate the estimand: Insert the relevant data in Step 4 into the estimand, perform basic arithmetic calculations, and derive the final answer. Step 7) Give a final yes/no answer to the question.
 There is an identifiable yes/no answer, which may sometimes go against your commonsense intuition. Answer step by step, where each thinking step has AT MOST 20 words -- in other words, you need to be concise in your reasoning trace.
@@ -55,14 +54,15 @@ Be confident in your thinking: while answers may be unintuitive, there are no tr
     else:
         context.append("Q: " + test_sample["question"])
 
-    # context.append("Please answer the question with step-by-step reasoning.")
     context.append(
         "\nAlso, evaluate your confidence level (between 0.0 and 1.0) to indicate the possibility of your answer being right."
     )
-    context.append(
-        'Output with JSON format as follows: {"thinking:", "", "reasoning": "", "answer": "", "confidence_level": ""}. Your internal thoughts go in the first, and your final, polished reasoning goes in the second.'
-    )
-    context.append('Only answer yes or no in the "answer" field.')
+
+    if force_json:
+        context.append(
+            'Output with JSON format as follows: {"reasoning": "", "answer": "", "confidence": ""}. Your internal thoughts go in the first, and your final, polished reasoning goes in the second.'
+        )
+        context.append('Only answer yes or no in the "answer" field.')
 
     if additional_instruc:
         context.append("\n" + "\n".join(additional_instruc))
@@ -71,21 +71,35 @@ Be confident in your thinking: while answers may be unintuitive, there are no tr
     return "\n".join(context)
 
 
-# Removed prepare_context_for_chat_assistant and prepare_context_for_bard as they are not needed for Ollama
+def prepare_summarizer_prompt(raw_text):
+    """
+    Prepares a prompt for the summarizer model to extract JSON.
+    """
+    prompt = f"""
+    The following is a response from another AI model. Your task is to extract the 'reasoning', 'answer' (which should be 'yes' or 'no'), and 'confidence' (a float between 0.0 and 1.0) from the text below. If any field is missing or unclear, use an empty string for reasoning, 'yes' or 'no' (randomly chosen) for answer, and 0.0 for confidence.
+
+    Response:
+    ---
+    {raw_text}
+    ---
+
+    Output with JSON format as follows: {{"reasoning": "", "answer": "", "confidence": ""}}. Only answer yes or no in the "answer" field.
+    """
+    return prompt
 
 
 def invalid_result():
     """Returns a default invalid result dictionary."""
     result = {
         "reasoning": "",
-        "answer": np.random.choice(["yes", "no"]),  # Default to yes/no for generic case
-        "confidence_level": 0.0,
+        "answer": np.random.choice(["yes", "no"]),
+        "confidence": 0.0,
     }
     return result
 
 
 class Answer(BaseModel):
-    thinking: str
+    # thinking: str
     reasoning: str
     answer: str
     confidence: float
@@ -171,11 +185,13 @@ def parse_output(all_results, rounds, model_names):
     """
     Parses and processes the output from all models for a given round,
     calculates votes, and generates the debate prompt for the next round.
+    This function now expects the `_output_` field to contain the raw model response,
+    and the structured JSON will be derived by `clean_output`.
 
     Args:
         all_results (list): The list containing results from all agents for all rounds.
         rounds (int): The current round number.
-        model_names (list): A list of descriptive names of the models (e.g., ["qwen", "deepseek", "magistral"]).
+        model_names (list): A list of descriptive names of the models (e.g., ["qwen", "deepseek"]).
 
     Returns:
         list: The updated all_results list.
@@ -187,11 +203,11 @@ def parse_output(all_results, rounds, model_names):
 
         for name in model_names:
             output_key = f"{name}_output_{rounds}"
-            if output_key in i:
+            if output_key in i and isinstance(i[output_key], dict):
                 # Store prediction and explanation under new keys
                 i[f"{name}_pred_{rounds}"] = i[output_key]["answer"]
                 i[f"{name}_exp_{rounds}"] = (
-                    f"I think the answer is {i[output_key]['answer']} because {i[output_key]['reasoning']} My confidence level is {i[output_key]['confidence_level']}."
+                    f"I think the answer is {i[output_key]['answer']} because {i[output_key]['reasoning']} My confidence level is {i[output_key]['confidence']}."
                 )
 
                 # Add to lists for overall voting
@@ -201,11 +217,11 @@ def parse_output(all_results, rounds, model_names):
                 # Update certainty vote
                 if i[output_key]["answer"] not in certainty_vote:
                     certainty_vote[i[output_key]["answer"]] = (
-                        trans_confidence(i[output_key]["confidence_level"]) + 1e-5
+                        trans_confidence(i[output_key]["confidence"]) + 1e-5
                     )
                 else:
                     certainty_vote[i[output_key]["answer"]] += trans_confidence(
-                        i[output_key]["confidence_level"]
+                        i[output_key]["confidence"]
                     )
 
         # Only proceed if there are predictions from at least one model in this round
@@ -214,25 +230,24 @@ def parse_output(all_results, rounds, model_names):
             i[f"exps_{rounds}"] = current_round_exps
             i[f"weighted_vote_{rounds}"] = certainty_vote
 
-            if certainty_vote:  # Ensure certainty_vote is not empty
+            if certainty_vote:
                 i[f"weighted_max_{rounds}"] = max(
                     certainty_vote, key=certainty_vote.get
                 )
             else:
-                i[f"weighted_max_{rounds}"] = None  # Or some default value if no votes
+                i[f"weighted_max_{rounds}"] = None 
 
             i[f"debate_prompt_{rounds}"] = ""
             vote_counts = Counter(i[f"vote_{rounds}"]).most_common(
                 len(model_names)
-            )  # Get counts for all answers
+            ) 
 
-            # Determine majority answer
             if vote_counts:
                 i[f"majority_ans_{rounds}"] = vote_counts[0][0]
             else:
-                i[f"majority_ans_{rounds}"] = None  # Or some default
+                i[f"majority_ans_{rounds}"] = None
 
-            # Construct debate prompt
+            # Construct debate prompt from the raw responses, not just the parsed explanations
             for v_ans, v_count in vote_counts:
                 i[f"debate_prompt_{rounds}"] += (
                     f"There are {v_count} agents that think the answer is {v_ans}. "
@@ -245,101 +260,71 @@ def parse_output(all_results, rounds, model_names):
     return all_results
 
 
-def evaluate_single_model(results, model_name):
-    """Evaluates the accuracy of a single model."""
-    num_correct = 0
-    for i in results:
-        # Check if the model's prediction exists for round 0
-        if (
-            f"{model_name}_output_0" in i
-            and i["gold_answer"] == i[f"{model_name}_output_0"]["gold"]
-        ):  # Changed from 'prediction' to output_0 and gold key
-            num_correct += 1
-    return num_correct / len(results)
-
-
-def clean_output(all_results, rounds, model_names):
+def clean_output(all_results, rounds, model_names, summarizer_model_id):
     """
-    Cleans and standardizes the model outputs.
+    Cleans and standardizes the model outputs by using a summarizer model
+    to parse raw responses into a structured JSON format.
 
     Args:
         all_results (list): The list containing results from all agents.
         rounds (int): The current round number.
-        dataset (str): The name of the dataset.
         model_names (list): A list of descriptive names of the models.
+        summarizer_model_id (str): The Ollama model ID for the summarizer.
 
     Returns:
         list: The cleaned all_results list.
     """
     for i in all_results:
         for name in model_names:
-            output_key = f"{name}_output_{rounds}"
-            if output_key in i:
-                original_output_dict = i[output_key]
-                # print(original_output_dict, output_key, i)
-                raw_response_string = original_output_dict.get('response', '')
-                
-                # Parse the JSON from the raw response string
-                parsed_json_from_response = parse_json(raw_response_string)
-                
-                print("\n\n\n========")
-                print(name)
-                print("========")
-                print(raw_response_string)
-                print("fjdsijfglojtew")
-                print(parsed_json_from_response)
+            raw_output_key = f"{name}_raw_output_{rounds}"
+            structured_output_key = f"{name}_output_{rounds}"
 
+            if raw_output_key in i:
+                raw_response_string = i[raw_output_key].get('response', '')
+                gold_answer = i[raw_output_key].get('gold') 
+
+                # Use the summarizer model to parse the raw response
+                # We need a dummy sample for prepare_context, but the actual content is in raw_response_string
+                # The summarizer_model_id will be used to call ollama_gen_ans
+                from generation import ollama_summarize_output # Import locally to avoid circular dependency
+
+                parsed_structured_output = ollama_summarize_output(
+                    summarizer_model_id,
+                    raw_response_string,
+                    gold_answer # Pass gold answer to summarizer for consistency
+                )
+                
                 # If parsing was successful and it's a dict, update the main dict's fields
-                if isinstance(parsed_json_from_response, dict):
-                    # Update fields from the parsed JSON, preserving 'gold' and original 'response'
-                    if 'reasoning' in parsed_json_from_response:
-                        original_output_dict['reasoning'] = parsed_json_from_response['reasoning']
-                    if 'answer' in parsed_json_from_response:
-                        original_output_dict['answer'] = parsed_json_from_response['answer']
-                    if 'confidence_level' in parsed_json_from_response:
-                        original_output_dict['confidence_level'] = parsed_json_from_response['confidence_level']
-                else:
-                    # If parsing failed, set to invalid result but try to preserve 'gold'
-                    # The 'gold' key is part of the original dict from ollama_gen_ans,
-                    # so we should not lose it.
-                    gold_answer = original_output_dict.get('gold')
-                    # Initialize with a default invalid structure
-                    original_output_dict = invalid_result()
-                    original_output_dict['gold'] = gold_answer # Re-add gold if available
-
-                # Now, ensure all necessary fields are present and correctly formatted in original_output_dict
-                # Ensure 'reasoning' field exists and is a string
-                if 'reasoning' not in original_output_dict or original_output_dict['reasoning'] is None:
-                    original_output_dict['reasoning'] = ""
-                elif isinstance(original_output_dict['reasoning'], list):
-                    original_output_dict['reasoning'] = " ".join(map(str, original_output_dict['reasoning']))
-                elif not isinstance(original_output_dict['reasoning'], str):
-                    original_output_dict['reasoning'] = str(original_output_dict['reasoning'])
-
-                current_answer = str(original_output_dict.get('answer', '')).strip().lower()
-                if current_answer not in ['yes', 'no']:
-                    original_output_dict['answer'] = np.random.choice(['yes', 'no'])
-                else:
-                    original_output_dict['answer'] = current_answer
-                        
-                # Standardize 'confidence_level'
-                current_confidence = original_output_dict.get('confidence_level')
-                if current_confidence is None:
-                    original_output_dict['confidence_level'] = 0.0
-                else:
-                    if isinstance(current_confidence, str) and "%" in current_confidence:
-                            try:
-                                original_output_dict['confidence_level'] = float(current_confidence.replace("%","")) / 100
-                            except ValueError:
-                                original_output_dict['confidence_level'] = 0.0
+                if isinstance(parsed_structured_output, dict):
+                    # Ensure all necessary fields are present and correctly formatted
+                    final_structured_output = {}
+                    final_structured_output['reasoning'] = parsed_structured_output.get('reasoning', '')
+                    final_structured_output['answer'] = str(parsed_structured_output.get('answer', '')).strip().lower()
+                    if final_structured_output['answer'] not in ['yes', 'no']:
+                        final_structured_output['answer'] = np.random.choice(['yes', 'no'])
+                    
+                    current_confidence = parsed_structured_output.get('confidence')
+                    if current_confidence is None:
+                        final_structured_output['confidence'] = 0.0
                     else:
-                        try:
-                            original_output_dict['confidence_level'] = float(current_confidence)
-                        except (ValueError, TypeError):
-                            original_output_dict['confidence_level'] = 0.0
-                
-                # Assign the modified dictionary back
-                i[output_key] = original_output_dict
+                        if isinstance(current_confidence, str) and "%" in current_confidence:
+                                try:
+                                    final_structured_output['confidence'] = float(current_confidence.replace("%","")) / 100
+                                except ValueError:
+                                    final_structured_output['confidence'] = 0.0
+                        else:
+                            try:
+                                final_structured_output['confidence'] = float(current_confidence)
+                            except (ValueError, TypeError):
+                                final_structured_output['confidence'] = 0.0
+                    
+                    final_structured_output['gold'] = gold_answer
+                    i[structured_output_key] = final_structured_output
+                else:
+                    # If summarization failed, set to invalid result and preserve 'gold'
+                    invalid = invalid_result()
+                    invalid['gold'] = gold_answer
+                    i[structured_output_key] = invalid
                 
     return all_results
 
@@ -392,9 +377,6 @@ def evaluate_all(all_results, rounds, model_names):
         )
 
     # Evaluate aggregate predictions if they exist for the current round
-    # We need to ensure these keys exist in the `all_results` before evaluating
-    # For a given sample `i`, `majority_ans_X` and `weighted_max_X` will be present
-    # if `parse_output` successfully processed that sample for round X.
 
     # Check if 'majority_ans' and 'weighted_max' fields are expected in this round
     # by checking if any sample has them from the current round
@@ -417,3 +399,4 @@ def evaluate_all(all_results, rounds, model_names):
         )
 
     return accuracies
+

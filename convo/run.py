@@ -11,11 +11,14 @@ import datetime
 from tqdm import tqdm
 import pandas as pd
 
-MODELS = {"qwen": "qwen3:32b", "deepseek": "deepseek-r1:32b", "magistral": "magistral"}
+MODELS = {"qwen": "qwen3:32b", "deepseek": "deepseek-r1:32b"}
 MODEL_NAMES = list(MODELS.keys())
 
+# TODO: experiment with lighter-weight model
+SUMMARIZER_MODEL_ID = "qwen3:32b"
 
 def load_cladder():
+    
     df = pd.read_json(
         "/home/finn/Documents/Python/cladder/data/cladder-v1/cladder-v1-q-hard.json"
     )
@@ -48,11 +51,10 @@ if __name__ == "__main__":
     test_samples = data.to_dict(orient="records")[: args.num_samples]
     print(f"Number of test samples={len(test_samples)}")
 
-    # Phase 1: Initial Response Generation for all Ollama models
-    initial_results_per_model = {name: [] for name in MODEL_NAMES}
+    # Phase 1: Initial Response Generation for thinking models
+    initial_raw_results_per_model = {name: [] for name in MODEL_NAMES}
 
     for test_sample_idx, test_sample in tqdm(enumerate(test_samples)):
-        # For each test sample, get initial predictions from all models
         for name, model_id in MODELS.items():
             result = ollama_gen_ans(
                 model_id,
@@ -60,53 +62,58 @@ if __name__ == "__main__":
                 additional_instruc=None,
                 intervene=False,
             )
-            initial_results_per_model[name].append(result)
-            
-            # if name=="qwen":
-            #     print(result)
+            initial_raw_results_per_model[name].append(result)
         time.sleep(0.5)  # Small delay to avoid overwhelming Ollama server
 
-    # Combine initial results into a single list for 'all_results'
+    # Combine initial raw results into a single list for 'all_results'
     all_results = []
     for i in range(len(test_samples)):
         tmp = {"gold_answer": test_samples[i]["answer"]}
         for name in MODEL_NAMES:
-            # Store the prediction under the key like 'qwen_output_0'
-            tmp[f"{name}_output_0"] = initial_results_per_model[name][i]
+            # Store the raw prediction under the key like 'qwen_raw_output_0'
+            tmp[f"{name}_raw_output_0"] = initial_raw_results_per_model[name][i]
         all_results.append(tmp)
 
-    # Clean and parse initial outputs
-    # Pass all model names to clean_output and parse_output
+    # Clean and parse initial outputs into structured JSON and store them under 'qwen_output_0', 'deepseek_output_0'
     all_results = clean_output(
-        all_results, 0, model_names=MODEL_NAMES
+        all_results, 0, model_names=MODEL_NAMES, summarizer_model_id=SUMMARIZER_MODEL_ID
     )
     all_results = parse_output(all_results, 0, model_names=MODEL_NAMES)
     print(
         f"Initial Round Performance: {evaluate_all(all_results, 0, model_names=MODEL_NAMES)}"
     )
 
-    # Phase 2: Multi-Round Discussion
+    # Phase 2: Multi-Round Debate
     for r in range(1, args.round + 1):
-        print(f"----- Round {r} Discussion -----")
+        print(f"----- Round {r} Debate -----")
 
-        # Iterate through each model for the debate round
-        for current_model_name, current_model_id in MODELS.items():
+        # Determine the order of debaters for this round
+        # In each round, one model (randomly chosen for the first turn of the debate) will respond to the other's previous turn.
+        debater_order = list(MODEL_NAMES)
+        random.shuffle(debater_order)
+
+        for turn, current_model_name in enumerate(debater_order):
+            current_model_id = MODELS[current_model_name]
+            other_model_name = [name for name in MODEL_NAMES if name != current_model_name][0]
+
+            print(f"--- Round {r}, Turn {turn+1}: {current_model_name} debates ---")
             all_results = ollama_debate(
                 current_model_name,
                 current_model_id,
                 test_samples,
                 all_results,
                 rounds=r,
+                other_model_name=other_model_name,
+                summarizer_model_id=SUMMARIZER_MODEL_ID
+            )
+            # After each model's turn, clean_output is implicitly to summarize the raw output.
+            
+            # Parse output after each turn to update debate prompts for the next turn
+            all_results = parse_output(all_results, r, model_names=MODEL_NAMES)
+            print(
+                f"Round {r} Performance (after {current_model_name}'s turn): {evaluate_all(all_results, r, model_names=MODEL_NAMES)}"
             )
 
-        # Clean and parse outputs after all models have debated in the current round
-        all_results = clean_output(
-            all_results, r, model_names=MODEL_NAMES
-        )
-        all_results = parse_output(all_results, r, model_names=MODEL_NAMES)
-        print(
-            f"Round {r} Performance: {evaluate_all(all_results, r, model_names=MODEL_NAMES)}"
-        )
 
     # Save results
     timestamp = datetime.datetime.now().strftime("%m-%d_%H-%M")
@@ -115,3 +122,4 @@ if __name__ == "__main__":
     with open(output_filename, "wb") as f:
         pickle.dump(all_results, f)
     print(f"Results saved to {output_filename}")
+
