@@ -75,7 +75,7 @@ def parse_json(model_output):
             return "ERR_SYNTAX_3"
 
 
-def parse_output(all_results, rounds, model_names):
+def parse_output(all_results, round, model_names):
     """
     Parses and processes the *structured* output from models for a given round.
     In a two-agent debate, its role for 'debate_prompt' is diminished,
@@ -92,17 +92,18 @@ def parse_output(all_results, rounds, model_names):
     for i in all_results:
 
         for name in model_names:
-            structured_output_key = f"{name}_output_{rounds}"
+            structured_output_key = f"{name}_output_{round}"
             if structured_output_key in i and isinstance(i[structured_output_key], dict):
                 structured_output = i[structured_output_key]
 
                 # Store prediction and explanation under new keys
-                i[f"{rounds}_pred_{name}"] = structured_output.get("answer")
-                i[f"{rounds}_exp_{name}"] = (
-                    f"{structured_output.get('reasoning')} Therefore, I think the final answer should be {structured_output.get('answer')}, and my confidence level is {structured_output.get('confidence')}."
-                )
+                i[f"{round}_pred_{name}"] = structured_output.get("answer")
+                i[f"{round}_exp"] = [
+                    f"{structured_output.get('reasoning')} Therefore, I think the final answer should be {structured_output.get('answer')}, and my confidence level is {structured_output.get('confidence')}.",
+                    name,
+                ]
 
-        i[f"debate_prompt_{rounds}"] = f"Here is your opponent's response: {i[f"{rounds}_exp_{name}"]}\n\n"
+        # i[f"debate_prompt_{rounds}"] = f"Here is your opponent's response: {i[f"{rounds}_exp_{name}"]}\n\n"
 
     return all_results
 

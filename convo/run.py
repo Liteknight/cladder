@@ -42,8 +42,8 @@ if __name__ == "__main__":
     timestamp = datetime.datetime.now().strftime("%m-%d_%H-%M-%S")
     print(timestamp)
 
-    parser.add_argument("--num_samples", default=1, type=int)
-    parser.add_argument("--responses", default=4, type=int) # Total responses for agents: 2 will mean each agent speaks once
+    parser.add_argument("--num_samples", default=2, type=int)
+    parser.add_argument("--responses", default=3, type=int) # Total responses for agents: 2 will mean each agent speaks once
     args = parser.parse_args()
 
     data = load_cladder()
@@ -66,7 +66,7 @@ if __name__ == "__main__":
     for i, s in tqdm(enumerate(all_results)):
         current_sample = test_samples[i]
         
-        prompt = prepare_context(current_sample)
+        prompt = prepare_prompt(current_sample, 0)
         
         # First debater generates initial raw response
         raw_result = ollama_gen_ans(
@@ -76,7 +76,7 @@ if __name__ == "__main__":
         )
         s[f"{first_name}_raw_output_0"] = raw_result
 
-        s[f"{first_name}_output_0"] = ollama_summarize_output(
+        s[f"{first_name}_output_0"] = summarize(
             SUMMARIZER_ID,
             raw_result
         )
@@ -108,7 +108,7 @@ if __name__ == "__main__":
             curr_id,
             test_samples, # test_samples are needed for the base question/context
             all_results,
-            rounds=r, # Current round/turn number for storing results
+            round=r, # Current round/turn number for storing results
             opp_name=opp_name,
             summ_id=SUMMARIZER_ID
         )
