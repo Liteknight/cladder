@@ -24,6 +24,6 @@ def load_and_print_pickle(path, skip_keys=None):
     return data
 
 if __name__ == "__main__":
-    path = "r4_07-09_14-43.pkl"
+    path = "r4_07-10_14-05.pkl"
     # skip_keys = ["magistral_output_"]
     load_and_print_pickle(path)

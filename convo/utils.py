@@ -90,8 +90,6 @@ def parse_output(all_results, rounds, model_names):
         list: The updated all_results list.
     """
     for i in all_results:
-        current_round_preds = []
-        current_round_exps = []
 
         for name in model_names:
             structured_output_key = f"{name}_output_{rounds}"
@@ -99,21 +97,12 @@ def parse_output(all_results, rounds, model_names):
                 structured_output = i[structured_output_key]
 
                 # Store prediction and explanation under new keys
-                i[f"{name}_pred_{rounds}"] = structured_output.get("answer")
-                i[f"{name}_exp_{rounds}"] = (
-                    f"I think the answer is {structured_output.get('answer')} because {structured_output.get('reasoning')} My confidence level is {structured_output.get('confidence')}."
+                i[f"{rounds}_pred_{name}"] = structured_output.get("answer")
+                i[f"{rounds}_exp_{name}"] = (
+                    f"{structured_output.get('reasoning')} Therefore, I think the final answer should be {structured_output.get('answer')}, and my confidence level is {structured_output.get('confidence')}."
                 )
 
-                # Add to lists for overall voting (even if only 2 agents, this can still aggregate their individual outputs)
-                current_round_preds.append(structured_output.get("answer"))
-                current_round_exps.append(i[f"{name}_exp_{rounds}"])
-
-        # Only proceed if there are predictions from at least one model in this round
-        if current_round_preds:
-            i[f"vote_{rounds}"] = current_round_preds.append(structured_output.get("confidence"))
-            i[f"exps_{rounds}"] = current_round_exps
-
-        i[f"debate_prompt_{rounds}"] = f"Here is your opponent's response: {i[f"exps_{rounds}"]}\n\n"
+        i[f"debate_prompt_{rounds}"] = f"Here is your opponent's response: {i[f"{rounds}_exp_{name}"]}\n\n"
 
     return all_results
 
